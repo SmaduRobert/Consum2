@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Consum Smart</title>
+<style>
+:root{--bg:#f4f4f2;--fg:#111;--card:#fff;--mut:#666;--ac:#0a7d3b;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#000;--fg:#f2f2f2;--card:#161616;--mut:#999;--ac:#3ddc84}}
+:root[data-theme="dark"]{--bg:#000;--fg:#f2f2f2;--card:#161616;--mut:#999;--ac:#3ddc84}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,system-ui,Arial,sans-serif;padding:12px}
+button{font:inherit;padding:12px 16px;border-radius:10px;border:0;background:var(--ac);color:#fff;font-weight:600}
+button.s{background:var(--card);color:var(--fg);border:1px solid var(--mut)}
+.row{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.c{background:var(--card);border-radius:12px;padding:10px;text-align:center}
+.c.w{grid-column:span 2}
+.c b{display:block;font-size:44px;line-height:1.1;margin:4px 0}
+.c.w b{font-size:64px;color:var(--ac)}
+.c span{color:var(--mut);font-size:13px}
+#st{color:var(--mut);font-size:13px;margin:8px 0}
+label{font-size:13px;color:var(--mut)}
+input{width:80px;font:inherit;padding:6px;border-radius:8px;border:1px solid var(--mut);background:var(--card);color:var(--fg)}
+</style>
+</head>
+<body>
+<div class="row">
+<button id="cn">Conectează</button>
+<button class="s" id="rs">Reset călătorie</button>
+</div>
+<div id="st">Deschide în Bluefy și apasă Conectează (contact pus).</div>
+<div class="g">
+<div class="c w"><span>Consum instant</span><b id="il">—</b><span>L/100km</span></div>
+<div class="c"><span>Consum mediu</span><b id="al">—</b><span>L/100km</span></div>
+<div class="c"><span>Debit</span><b id="lh">—</b><span>L/h</span></div>
+<div class="c"><span>Viteză</span><b id="sp">—</b><span>km/h</span></div>
+<div class="c"><span>Turație</span><b id="rp">—</b><span>rpm</span></div>
+<div class="c"><span>Distanță</span><b id="di">0.0</b><span>km</span></div>
+<div class="c"><span>Combustibil folosit</span><b id="fu">0.00</b><span>L</span></div>
+</div>
+<div class="row" style="margin-top:12px">
+<label>Factor corecție <input id="k" type="number" step="0.01" value="1.00"></label>
+<label>Eficiență VE <input id="ve" type="number" step="0.01" value="0.85"></label>
+<label>Prag MAP tăiere (kPa) <input id="cut" type="number" step="1" value="0"></label>
+</div>
+<div id="dg" style="color:var(--mut);font-size:13px;margin:8px 0"></div>
+<div id="st2" style="color:var(--mut);font-size:12px">Calibrare: după alimentare, factor nou = litri reali alimentați ÷ „Combustibil folosit” afișat × factor curent.</div>
+<script>
+const $=id=>document.getElementById(id);
+const K=(()=>{try{return localStorage}catch(e){return null}})();
+try{if(K){$('k').value=K.getItem('k')||'1.00';$('ve').value=K.getItem('ve')||'0.85';$('cut').value=K.getItem('cut')||'0'}}catch(e){}
+['k','ve','cut'].forEach(i=>$(i).onchange=()=>{try{K&&K.setItem(i,$(i).value)}catch(e){}});
+const B='-0000-1000-8000-00805f9b34fb';
+const SVC=['0000fff0'+B,'0000ffe0'+B,'000018f0'+B,'e7810a71-73ae-499d-8c15-faa9aef0c3f2','49535343-fe7d-4ae5-8fa9-9fafd205e455'];
+let hasThr=false,thrMin=100,step='',wch=null,buf='',res=null,dist=0,fuel=0,mode='',run=false;
+const dec=new TextDecoder(),enc=new TextEncoder();
+const st=t=>$('st').textContent=t;
+function onData(e){buf+=dec.decode(e.target.value);if(buf.includes('>')){const r=buf;buf='';if(res){const f=res;res=null;f(r)}}}
+async function wr(s){const d=enc.encode(s);for(let i=0;i<d.length;i+=20){const p=d.slice(i,i+20);if(wch.writeValueWithoutResponse)await wch.writeValueWithoutResponse(p);else await wch.writeValue(p)}}
+function cmd(c){return new Promise(async ok=>{buf='';const t=setTimeout(()=>{res=null;ok('')},4000);res=r=>{clearTimeout(t);ok(r)};try{await wr(c+'\r')}catch(e){clearTimeout(t);res=null;ok('')}})}
+function pid(r,p){const s=r.replace(/[^0-9A-Fa-f]/g,'').toUpperCase();const i=s.indexOf('41'+p);if(i<0)return null;const m=s.slice(i+4).match(/../g);return m?m.map(h=>parseInt(h,16)):null}
+$('cn').onclick=async()=>{
+ try{
+  if(!navigator.bluetooth){st('Acest browser nu are Web Bluetooth. Folosește Bluefy.');return}
+  st(window.self!==window.top?'Pagina e într-un cadru (iframe), Bluetooth poate fi blocat. Caut adaptorul...':'Caut adaptorul...');
+  step='alegere dispozitiv';
+  const dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:SVC});
+  step='conectare GATT ('+(dev.name||'?')+')';
+  const srv=await dev.gatt.connect();
+  step='căutare servicii';
+  let nch=null;wch=null;
+  let svs=[];
+  for(const u of SVC){try{svs.push(await srv.getPrimaryService(u))}catch(e){}}
+  if(!svs.length){try{svs=await srv.getPrimaryServices()}catch(e){}}
+  step='citire caracteristici';
+  for(const s of svs){
+   let cs=[];try{cs=await s.getCharacteristics()}catch(e){}
+   for(const c of cs){
+    if(!nch&&(c.properties.notify||c.properties.indicate))nch=c;
+    if(!wch&&(c.properties.write||c.properties.writeWithoutResponse))wch=c;
+   }
+  }
+  if(!nch||!wch){st('Conectat la '+(dev.name||'adaptor')+', dar nu am găsit canalele BLE ('+svs.length+' servicii).');return}
+  step='activare notificări';
+  await nch.startNotifications();nch.addEventListener('characteristicvaluechanged',onData);
+  dev.addEventListener('gattserverdisconnected',()=>{run=false;st('Deconectat.')});
+  step='inițializare';st('Inițializez...');
+  for(const c of ['ATZ','ATE0','ATL0','ATS0','ATH0','ATSP0'])await cmd(c);
+  await cmd('0100');
+  if(pid(await cmd('0110'),'10')){mode='MAF'}
+  else if(pid(await cmd('010B'),'0B')){mode='MAP'}
+  else{st('Mașina nu raportează nici MAF, nici MAP: consumul nu se poate calcula. Merg doar turația și viteza.');mode=''}
+  try{hasThr=!!pid(await cmd('0111'),'11')}catch(e){}
+  try{navigator.wakeLock&&navigator.wakeLock.request('screen')}catch(e){}
+  run=true;if(mode)st('Conectat. Metodă: '+mode+(mode==='MAP'?' (estimare, calibrează factorul)':''));
+  loop();
+ }catch(e){const m=[e&&e.name,e&&e.message].filter(Boolean).join(': ')||String(e);st('Eroare la '+step+': '+m)}
+};
+$('rs').onclick=()=>{dist=0;fuel=0;upd(null)};
+let last=0;
+async function loop(){
+ last=performance.now();
+ while(run){
+  const rp=pid(await cmd('010C'),'0C'),sp=pid(await cmd('010D'),'0D');
+  let th=null;if(hasThr){const t=pid(await cmd('0111'),'11');if(t)th=t[0]*100/255}
+  let mapv=null,gs=null;
+  if(mode==='MAF'){const m=pid(await cmd('0110'),'10');if(m)gs=(m[0]*256+m[1])/100/14.7}
+  else if(mode==='MAP'){
+   const mp=pid(await cmd('010B'),'0B'),ia=pid(await cmd('010F'),'0F');
+   if(mp)mapv=mp[0];
+   if(mp&&rp){
+    const T=(ia?ia[0]-40:30)+273.15,rpm=(rp[0]*256+rp[1])/4,ve=parseFloat($('ve').value)||0.85;
+    const rho=mp[0]*1000/(287*T);
+    gs=rho*ve*0.000999*rpm/120*1000/14.7;
+   }
+  }
+  const now=performance.now(),dt=(now-last)/1000;last=now;
+  const v=sp?sp[0]:0,k=parseFloat($('k').value)||1;
+  const rpmv=rp?(rp[0]*256+rp[1])/4:0;
+  if(rpmv<1100&&v<3&&th!==null&&th<thrMin)thrMin=th;
+  let cut=false;
+  if(rpmv>1300&&v>5){
+   if(th!==null&&thrMin<100)cut=th<=thrMin+1.5;
+   else if(!hasThr&&mapv!==null){const c=parseFloat($('cut').value)||0;cut=c>0&&mapv<=c}
+  }
+  if(cut&&gs!==null)gs=0;
+  $('dg').textContent='MAP '+(mapv===null?'—':mapv+' kPa')+' | clapetă '+(th===null?'—':th.toFixed(0)+'%')+' | tăiere '+(cut?'DA':'nu');
+  let lh=null;
+  if(gs!==null){lh=gs*k*3600/745;fuel+=lh*dt/3600}
+  dist+=v*dt/3600;
+  upd({rpm:rp?(rp[0]*256+rp[1])/4:null,v,lh});
+ }
+}
+function upd(d){
+ if(d){
+  $('rp').textContent=d.rpm===null?'—':Math.round(d.rpm);
+  $('sp').textContent=d.v;
+  $('lh').textContent=d.lh===null?'—':d.lh.toFixed(2);
+  $('il').textContent=d.lh===null?'—':(d.v>3?(d.lh/d.v*100).toFixed(1):'—');
+ }
+ $('di').textContent=dist.toFixed(2);
+ $('fu').textContent=fuel.toFixed(2);
+ $('al').textContent=dist>0.1?(fuel/dist*100).toFixed(1):'—';
+}
+</script>
+</body>
+</html>
